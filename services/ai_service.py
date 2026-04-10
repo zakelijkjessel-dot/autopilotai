@@ -1,17 +1,15 @@
 """
 AI-service: beheert de conversatie met Claude en voert tool-calls uit.
-Elke functie die een tool uitvoert is puur synchroon (snelle SQLite-queries).
-De top-level `process_message` is async zodat e-mail en WhatsApp niet blokkeren.
+
+Afbeeldingen worden meegegeven als vooraf gedownloade base64-dicts
+zodat deze service volledig ontkoppeld is van Twilio of andere media-bronnen.
 """
 
-import base64
 import logging
-import os
 from datetime import datetime, timedelta
 from typing import Optional
 
 import anthropic
-import requests
 from sqlalchemy.orm import Session
 
 import models
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _async_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-MAX_HISTORY = 20  # maximaal aantal berichten dat we bewaren
+MAX_HISTORY = 20
 
 # ─────────────────────────────────────────────
 # Tool-definities voor Claude
@@ -41,14 +39,14 @@ TOOLS: list[dict] = [
             "properties": {
                 "datum": {"type": "string", "description": "YYYY-MM-DD"},
                 "tijd": {"type": "string", "description": "HH:MM"},
-                "duur_minuten": {"type": "integer", "description": "Duur in minuten (standaard 60)", "default": 60},
+                "duur_minuten": {"type": "integer", "default": 60},
             },
             "required": ["datum", "tijd"],
         },
     },
     {
         "name": "boek_afspraak",
-        "description": "Boek een nieuwe afspraak in het systeem. Controleer eerst de beschikbaarheid.",
+        "description": "Boek een nieuwe afspraak. Controleer eerst de beschikbaarheid.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -72,14 +70,14 @@ TOOLS: list[dict] = [
                 "duur_minuten": {"type": "integer"},
                 "prijs_min": {"type": "number"},
                 "prijs_max": {"type": "number"},
-                "ai_notities": {"type": "string", "description": "Notities voor de monteur"},
+                "ai_notities": {"type": "string"},
             },
             "required": ["klant_naam", "klant_email", "service_type", "datum", "tijd"],
         },
     },
     {
         "name": "haal_afspraken_op",
-        "description": "Haal alle actieve afspraken op voor de huidige klant (op basis van telefoonnummer).",
+        "description": "Haal alle actieve afspraken op voor de huidige klant.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
@@ -109,43 +107,12 @@ TOOLS: list[dict] = [
     },
 ]
 
-# ─────────────────────────────────────────────
-# Hulpfuncties – media downloaden
-# ─────────────────────────────────────────────
-
-def _download_as_base64(url: str) -> tuple[str, str]:
-    """Download media van Twilio en geef (base64_data, media_type) terug."""
-    resp = requests.get(
-        url,
-        auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    media_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-    data = base64.standard_b64encode(resp.content).decode()
-    return data, media_type
-
-
-def _save_image(url: str, phone: str, index: int) -> tuple[str, str]:
-    """Sla een afbeelding op in /uploads en geef (bestandsnaam, media_type) terug."""
-    os.makedirs("uploads", exist_ok=True)
-    resp = requests.get(
-        url,
-        auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    media_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-    ext = "jpg" if "jpeg" in media_type else media_type.split("/")[-1]
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{phone.replace('+', '')}_{ts}_{index}.{ext}"
-    with open(os.path.join("uploads", filename), "wb") as f:
-        f.write(resp.content)
-    return filename, media_type
+_DAGEN = {0: "maandag", 1: "dinsdag", 2: "woensdag", 3: "donderdag",
+           4: "vrijdag", 5: "zaterdag", 6: "zondag"}
 
 
 # ─────────────────────────────────────────────
-# Tool-uitvoering (synchroon)
+# Tool-uitvoering (synchroon / snel)
 # ─────────────────────────────────────────────
 
 def _check_availability(args: dict, db: Session) -> str:
@@ -160,9 +127,9 @@ def _check_availability(args: dict, db: Session) -> str:
     if wd == 6:
         return "De garage is op zondag gesloten. Kies een andere dag."
     if wd == 5 and (dt.hour < 8 or dt.hour >= 13):
-        return "Op zaterdag zijn we open van 08:00–13:00. Kies een tijd binnen deze uren."
+        return "Op zaterdag zijn we open van 08:00–13:00."
     if wd < 5 and (dt.hour < 8 or (dt.hour == 17 and dt.minute > 30) or dt.hour >= 18):
-        return "Op werkdagen zijn we open van 08:00–17:30. Kies een tijd binnen deze uren."
+        return "Op werkdagen zijn we open van 08:00–17:30."
     if dt < datetime.now():
         return "Dit tijdstip ligt in het verleden. Kies een toekomstige datum."
 
@@ -171,20 +138,17 @@ def _check_availability(args: dict, db: Session) -> str:
         models.Appointment.status == "bevestigd",
         models.Appointment.scheduled_datetime < end_dt,
     ).all()
-
     conflicts = [a for a in existing if (a.scheduled_datetime + timedelta(minutes=a.duur_minuten or 60)) > dt]
-    if not conflicts:
-        return f"Het tijdstip {tijd} op {datum} is beschikbaar voor een afspraak van {duur} minuten."
 
-    # Zoek alternatieven
+    if not conflicts:
+        return f"Het tijdstip {tijd} op {datum} is beschikbaar voor {duur} minuten."
+
     alts: list[str] = []
     for offset in [30, 60, 90, 120, 150, -30, -60]:
         alt = dt + timedelta(minutes=offset)
         alt_end = alt + timedelta(minutes=duur)
         aw = alt.weekday()
-        if aw == 6:
-            continue
-        if aw == 5 and (alt.hour < 8 or alt.hour >= 13):
+        if aw == 6 or (aw == 5 and (alt.hour < 8 or alt.hour >= 13)):
             continue
         if aw < 5 and (alt.hour < 8 or alt.hour >= 18):
             continue
@@ -203,17 +167,16 @@ def _check_availability(args: dict, db: Session) -> str:
             break
 
     alts_str = ", ".join(alts) if alts else "geen vrije tijden op deze dag"
-    return (
-        f"Het tijdstip {tijd} op {datum} is helaas bezet. "
-        f"Beschikbare alternatieven op {datum}: {alts_str}."
-    )
+    return f"Het tijdstip {tijd} op {datum} is bezet. Alternatieven: {alts_str}."
 
 
-def _book_appointment(args: dict, phone: str, db: Session) -> tuple[str, Optional[models.Appointment]]:
+def _book_appointment(
+    args: dict, phone: str, db: Session
+) -> tuple[str, Optional[models.Appointment]]:
     try:
         dt = datetime.strptime(f"{args['datum']} {args['tijd']}", "%Y-%m-%d %H:%M")
     except (ValueError, KeyError):
-        return "Ongeldige datum of tijd. Gebruik YYYY-MM-DD en HH:MM.", None
+        return "Ongeldige datum of tijd.", None
 
     apt = models.Appointment(
         klant_naam=args["klant_naam"],
@@ -239,20 +202,16 @@ def _book_appointment(args: dict, phone: str, db: Session) -> tuple[str, Optiona
     db.commit()
     db.refresh(apt)
 
-    _DAGEN = {0: "maandag", 1: "dinsdag", 2: "woensdag", 3: "donderdag",
-               4: "vrijdag", 5: "zaterdag", 6: "zondag"}
-    dag = _DAGEN[dt.weekday()]
     result = (
-        f"Afspraak #{apt.id} succesvol geboekt!\n"
-        f"Datum: {dag} {dt.strftime('%d-%m-%Y')} om {dt.strftime('%H:%M')} uur\n"
+        f"Afspraak #{apt.id} geboekt!\n"
+        f"Datum: {_DAGEN[dt.weekday()]} {dt.strftime('%d-%m-%Y')} om {dt.strftime('%H:%M')}\n"
         f"Service: {apt.service_type.replace('_', ' ').title()}\n"
-        f"Geschatte duur: ±{apt.duur_minuten} minuten\n"
+        f"Duur: ±{apt.duur_minuten} min\n"
     )
     if apt.prijs_min and apt.prijs_max:
-        result += f"Prijsindicatie: €{apt.prijs_min:.0f} – €{apt.prijs_max:.0f}\n"
+        result += f"Prijs: €{apt.prijs_min:.0f}–€{apt.prijs_max:.0f}\n"
     if apt.klant_email:
-        result += f"Bevestigingsmail wordt verstuurd naar {apt.klant_email}\n"
-
+        result += f"Bevestigingsmail → {apt.klant_email}\n"
     return result, apt
 
 
@@ -267,75 +226,57 @@ def _get_appointments(phone: str, db: Session) -> str:
         .all()
     )
     if not apts:
-        return "Er zijn geen actieve afspraken gevonden voor uw telefoonnummer."
-
-    _DAGEN = {0: "maandag", 1: "dinsdag", 2: "woensdag", 3: "donderdag",
-               4: "vrijdag", 5: "zaterdag", 6: "zondag"}
+        return "Geen actieve afspraken gevonden voor uw nummer."
     lines = [f"Uw afspraken ({len(apts)}):\n"]
     for a in apts:
-        dag = _DAGEN[a.scheduled_datetime.weekday()]
         auto = " ".join(filter(None, [a.auto_merk, a.auto_model, f"({a.kenteken})" if a.kenteken else ""]))
         lines.append(
-            f"Afspraak #{a.id}\n"
-            f"  {dag} {a.scheduled_datetime.strftime('%d-%m-%Y')} om {a.scheduled_datetime.strftime('%H:%M')}\n"
-            f"  Service: {a.service_type.replace('_', ' ').title()}\n"
-            + (f"  Auto: {auto}\n" if auto else "")
+            f"#{a.id} – {_DAGEN[a.scheduled_datetime.weekday()]} "
+            f"{a.scheduled_datetime.strftime('%d-%m-%Y')} {a.scheduled_datetime.strftime('%H:%M')}\n"
+            f"  {a.service_type.replace('_',' ').title()}"
+            + (f" | {auto}" if auto else "") + "\n"
         )
     return "\n".join(lines)
 
 
 def _cancel_appointment(args: dict, phone: str, db: Session) -> str:
-    apt = (
-        db.query(models.Appointment)
-        .filter(
-            models.Appointment.id == args["afspraak_id"],
-            models.Appointment.klant_telefoon == phone,
-        )
-        .first()
-    )
+    apt = db.query(models.Appointment).filter(
+        models.Appointment.id == args["afspraak_id"],
+        models.Appointment.klant_telefoon == phone,
+    ).first()
     if not apt:
-        return f"Afspraak #{args['afspraak_id']} niet gevonden voor uw telefoonnummer."
+        return f"Afspraak #{args['afspraak_id']} niet gevonden."
     if apt.status == "geannuleerd":
-        return f"Afspraak #{args['afspraak_id']} is al eerder geannuleerd."
-
+        return f"Afspraak #{args['afspraak_id']} is al geannuleerd."
     apt.status = "geannuleerd"
     db.commit()
-    return f"Afspraak #{args['afspraak_id']} is geannuleerd. Kan ik u verder helpen?"
+    return f"Afspraak #{args['afspraak_id']} geannuleerd. Kan ik u verder helpen?"
 
 
 def _reschedule_appointment(args: dict, phone: str, db: Session) -> str:
-    apt = (
-        db.query(models.Appointment)
-        .filter(
-            models.Appointment.id == args["afspraak_id"],
-            models.Appointment.klant_telefoon == phone,
-        )
-        .first()
-    )
+    apt = db.query(models.Appointment).filter(
+        models.Appointment.id == args["afspraak_id"],
+        models.Appointment.klant_telefoon == phone,
+    ).first()
     if not apt:
-        return f"Afspraak #{args['afspraak_id']} niet gevonden voor uw telefoonnummer."
-
+        return f"Afspraak #{args['afspraak_id']} niet gevonden."
     try:
         nieuwe_dt = datetime.strptime(f"{args['nieuwe_datum']} {args['nieuwe_tijd']}", "%Y-%m-%d %H:%M")
     except ValueError:
-        return "Ongeldige datum of tijd. Gebruik YYYY-MM-DD en HH:MM."
-
+        return "Ongeldige datum of tijd."
     apt.scheduled_datetime = nieuwe_dt
     apt.reminder_24h_sent = False
     apt.reminder_1h_sent = False
     db.commit()
-
-    _DAGEN = {0: "maandag", 1: "dinsdag", 2: "woensdag", 3: "donderdag",
-               4: "vrijdag", 5: "zaterdag", 6: "zondag"}
-    dag = _DAGEN[nieuwe_dt.weekday()]
     return (
-        f"Afspraak #{apt.id} is verplaatst naar "
-        f"{dag} {nieuwe_dt.strftime('%d-%m-%Y')} om {nieuwe_dt.strftime('%H:%M')} uur."
+        f"Afspraak #{apt.id} verplaatst naar "
+        f"{_DAGEN[nieuwe_dt.weekday()]} {nieuwe_dt.strftime('%d-%m-%Y')} om {nieuwe_dt.strftime('%H:%M')}."
     )
 
 
-def _execute_tool(name: str, tool_input: dict, phone: str, db: Session) -> tuple[str, Optional[models.Appointment]]:
-    """Voer een tool uit en geef (tekst_resultaat, optionele_afspraak) terug."""
+def _execute_tool(
+    name: str, tool_input: dict, phone: str, db: Session
+) -> tuple[str, Optional[models.Appointment]]:
     if name == "controleer_beschikbaarheid":
         return _check_availability(tool_input, db), None
     if name == "boek_afspraak":
@@ -350,7 +291,7 @@ def _execute_tool(name: str, tool_input: dict, phone: str, db: Session) -> tuple
 
 
 # ─────────────────────────────────────────────
-# Conversatiegeschiedenis – hulpfuncties
+# Conversatiegeschiedenis
 # ─────────────────────────────────────────────
 
 def _get_or_create_conversation(phone: str, db: Session) -> models.Conversation:
@@ -365,26 +306,25 @@ def _get_or_create_conversation(phone: str, db: Session) -> models.Conversation:
     return conv
 
 
-def _strip_images_from_history(history: list[dict]) -> list[dict]:
-    """Vervang afbeeldingen in opgeslagen berichten door een placeholder (ruimtebesparing)."""
+def _strip_images(history: list[dict]) -> list[dict]:
+    """Vervang afbeeldingen door placeholder om opslagruimte te besparen."""
     result = []
     for msg in history:
         content = msg["content"]
         if isinstance(content, list):
-            new_content = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "image":
-                    new_content.append({"type": "text", "text": "[eerder gestuurde foto]"})
-                else:
-                    new_content.append(block)
-            result.append({"role": msg["role"], "content": new_content})
+            new = [
+                {"type": "text", "text": "[eerder gestuurde foto]"}
+                if isinstance(b, dict) and b.get("type") == "image"
+                else b
+                for b in content
+            ]
+            result.append({"role": msg["role"], "content": new})
         else:
             result.append(msg)
     return result
 
 
 def _attach_photos(phone: str, filenames: list[str], db: Session) -> None:
-    """Koppel foto-bestandsnamen aan de meest recent aangemaakte afspraak."""
     apt = (
         db.query(models.Appointment)
         .filter(models.Appointment.klant_telefoon == phone)
@@ -403,52 +343,46 @@ def _attach_photos(phone: str, filenames: list[str], db: Session) -> None:
 async def process_message(
     phone: str,
     message: str,
-    media_urls: list[str],
-    media_types: list[str],
+    images: list[dict],
     db: Session,
+    photo_filenames: list[str] | None = None,
 ) -> str:
     """
-    Verwerk een inkomend WhatsApp-bericht:
-    1. Bouw het berichtinhoud op (tekst + eventuele foto's)
-    2. Voer de Claude agentic loop uit (inclusief tool-calls)
-    3. Sla de bijgewerkte conversatiegeschiedenis op
-    4. Stuur bevestigingsmails voor nieuwe afspraken
-    5. Geef de uiteindelijke assistent-reactie terug
+    Verwerk een bericht en geef de AI-reactie terug.
+
+    Args:
+        phone:           Telefoonnummer of sessie-ID van de klant.
+        message:         Tekstinhoud van het bericht.
+        images:          Lijst van {"data": "<base64>", "media_type": "image/jpeg"}.
+        db:              Database-sessie.
+        photo_filenames: Lokale bestandsnamen van de afbeeldingen (voor koppeling aan afspraak).
     """
+    photo_filenames = photo_filenames or []
     conv = _get_or_create_conversation(phone, db)
     history = list(conv.messages or [])
 
-    # ── Bouw gebruikerscontent ──
-    user_content: list[dict] = []
-    saved_filenames: list[str] = []
-
-    for i, (url, mtype) in enumerate(zip(media_urls, media_types)):
-        try:
-            b64, actual_type = _download_as_base64(url)
-            user_content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": actual_type, "data": b64},
-            })
-            filename, _ = _save_image(url, phone, i)
-            saved_filenames.append(filename)
-        except Exception as exc:
-            logger.warning("Kon afbeelding %s niet laden: %s", url, exc)
-
+    # Bouw gebruikerscontent
+    user_content: list[dict] = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": img["media_type"], "data": img["data"]},
+        }
+        for img in images
+    ]
     if message.strip():
         user_content.append({"type": "text", "text": message})
-    elif not user_content:
+    if not user_content:
         user_content = [{"type": "text", "text": "(leeg bericht)"}]
 
-    # ── Bereid API-berichten voor ──
-    messages: list[dict] = _strip_images_from_history(history) + [
+    messages: list[dict] = _strip_images(history) + [
         {"role": "user", "content": user_content}
     ]
 
-    # ── Agentic loop ──
-    booked_appointments: list[models.Appointment] = []
+    # Agentic loop
+    booked: list[models.Appointment] = []
     final_text = ""
 
-    for _ in range(6):  # max 6 rondes (tool-chains)
+    for _ in range(6):
         response = await _async_client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
@@ -457,46 +391,32 @@ async def process_message(
             messages=messages,
         )
 
-        # Verzamel tekst + tool-calls
-        text_parts: list[str] = []
-        tool_calls = []
-        for block in response.content:
-            if block.type == "text":
-                text_parts.append(block.text)
-            elif block.type == "tool_use":
-                tool_calls.append(block)
+        text_parts = [b.text for b in response.content if b.type == "text"]
+        tool_calls = [b for b in response.content if b.type == "tool_use"]
 
         if response.stop_reason == "end_turn" or not tool_calls:
             final_text = "".join(text_parts)
             break
 
-        # Verwerk tool-calls
         messages.append({"role": "assistant", "content": response.content})
         tool_results = []
         for tc in tool_calls:
             result_text, apt = _execute_tool(tc.name, tc.input, phone, db)
             if apt:
-                booked_appointments.append(apt)
-                if saved_filenames:
-                    _attach_photos(phone, saved_filenames, db)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tc.id,
-                "content": result_text,
-            })
+                booked.append(apt)
+                if photo_filenames:
+                    _attach_photos(phone, photo_filenames, db)
+            tool_results.append({"type": "tool_result", "tool_use_id": tc.id, "content": result_text})
         messages.append({"role": "user", "content": tool_results})
 
-    # ── Bewaar gespreksgeschiedenis (zonder ruwe afbeeldingen) ──
+    # Bewaar geschiedenis
     history.append({"role": "user", "content": message or "[foto gestuurd]"})
     history.append({"role": "assistant", "content": final_text})
-    if len(history) > MAX_HISTORY:
-        history = history[-MAX_HISTORY:]
-    conv.messages = history
+    conv.messages = history[-MAX_HISTORY:]
     db.add(conv)
     db.commit()
 
-    # ── Stuur bevestigingsmails ──
-    for apt in booked_appointments:
+    for apt in booked:
         await send_confirmation_email(apt)
 
     return final_text or "Er is een technisch probleem opgetreden. Probeer het opnieuw."

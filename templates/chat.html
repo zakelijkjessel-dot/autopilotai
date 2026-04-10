@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoBot – Chat Demo</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bot-bg: #ffffff;
+    --user-bg: #dcf8c6;
+    --header: #1e293b;
+    --accent: #25d366;
+    --muted: #8696a0;
+    --bg: #efeae2;
+    --border: #d1d7db;
+  }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: var(--bg); height: 100dvh; display: flex; flex-direction: column; }
+
+  /* Header */
+  header {
+    background: var(--header); color: #fff;
+    padding: 14px 18px; display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3); flex-shrink: 0;
+  }
+  .avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--accent); display: flex; align-items: center; justify-content: center;
+    font-size: 20px; flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header p  { font-size: 12px; color: #94a3b8; }
+  .header-right { margin-left: auto; font-size: 12px; color: #94a3b8; text-align: right; line-height: 1.5; }
+
+  /* Messages */
+  #messages {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bubble-wrap { display: flex; flex-direction: column; max-width: 72%; }
+  .bubble-wrap.user { align-self: flex-end; align-items: flex-end; }
+  .bubble-wrap.bot  { align-self: flex-start; align-items: flex-start; }
+  .bubble {
+    padding: 8px 12px; border-radius: 8px;
+    font-size: 14px; line-height: 1.5; word-break: break-word;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+    white-space: pre-wrap;
+  }
+  .bubble.user { background: var(--user-bg); border-bottom-right-radius: 2px; }
+  .bubble.bot  { background: var(--bot-bg);  border-bottom-left-radius: 2px; }
+  .bubble img  { max-width: 240px; border-radius: 6px; display: block; margin-top: 6px; }
+  .ts { font-size: 10px; color: var(--muted); margin-top: 2px; padding: 0 4px; }
+
+  /* Typing indicator */
+  .typing { display: none; align-items: center; gap: 5px; padding: 10px 14px; background: var(--bot-bg); border-radius: 8px; width: fit-content; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+  .typing span { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); animation: bounce 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes bounce { 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-6px)} }
+  #typing-wrap { align-self: flex-start; }
+  #typing-wrap.show .typing { display: flex; }
+
+  /* Image preview */
+  #preview-bar {
+    display: none; background: #fff; border-top: 1px solid var(--border);
+    padding: 8px 14px; gap: 8px; flex-wrap: wrap; align-items: center;
+  }
+  #preview-bar.show { display: flex; }
+  .preview-item { position: relative; }
+  .preview-item img { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; border: 2px solid var(--border); }
+  .remove-img {
+    position: absolute; top: -6px; right: -6px;
+    background: #ef4444; color: #fff; border: none; border-radius: 50%;
+    width: 18px; height: 18px; font-size: 11px; cursor: pointer; line-height: 18px; text-align: center;
+  }
+
+  /* Input bar */
+  #input-bar {
+    background: #f0f2f5; border-top: 1px solid var(--border);
+    padding: 10px 12px; display: flex; align-items: flex-end; gap: 8px; flex-shrink: 0;
+  }
+  #msg-input {
+    flex: 1; border: none; border-radius: 24px; background: #fff;
+    padding: 10px 16px; font-size: 14px; resize: none; outline: none;
+    max-height: 120px; overflow-y: auto; line-height: 1.4;
+    box-shadow: 0 1px 2px rgba(0,0,0,.08);
+  }
+  .icon-btn {
+    width: 42px; height: 42px; border-radius: 50%; border: none;
+    background: var(--accent); color: #fff; font-size: 18px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    transition: background .15s;
+  }
+  .icon-btn:hover { background: #1ebe57; }
+  .icon-btn.secondary { background: #64748b; }
+  .icon-btn.secondary:hover { background: #475569; }
+
+  /* Welcome */
+  .welcome {
+    text-align: center; color: var(--muted); font-size: 13px;
+    background: rgba(255,255,255,.7); border-radius: 8px;
+    padding: 10px 16px; margin: 8px auto; max-width: 320px;
+  }
+
+  /* Scrollbar */
+  #messages::-webkit-scrollbar { width: 5px; }
+  #messages::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="avatar">🔧</div>
+  <div>
+    <h1>AutoBot</h1>
+    <p id="garage-name">AutoGarage – WhatsApp Demo</p>
+  </div>
+  <div class="header-right">
+    <a href="/admin" style="color:#94a3b8;text-decoration:none">📋 Dashboard</a>
+  </div>
+</header>
+
+<div id="messages">
+  <div class="welcome">
+    Dit is een demo van de WhatsApp chatbot.<br>
+    Stel een vraag of plan een afspraak in.
+  </div>
+</div>
+
+<!-- Typing -->
+<div id="typing-wrap">
+  <div class="typing"><span></span><span></span><span></span></div>
+</div>
+
+<!-- Afbeeldingpreview -->
+<div id="preview-bar"></div>
+
+<!-- Input -->
+<div id="input-bar">
+  <button class="icon-btn secondary" id="attach-btn" title="Foto bijvoegen">📎</button>
+  <input type="file" id="file-input" accept="image/*" multiple hidden>
+  <textarea id="msg-input" rows="1" placeholder="Typ een bericht..."></textarea>
+  <button class="icon-btn" id="send-btn" title="Verstuur">➤</button>
+</div>
+
+<script>
+const SESSION_KEY = 'autobot_session';
+let sessionId = localStorage.getItem(SESSION_KEY);
+if (!sessionId) {
+  sessionId = crypto.randomUUID();
+  localStorage.setItem(SESSION_KEY, sessionId);
+}
+
+const messagesEl  = document.getElementById('messages');
+const inputEl     = document.getElementById('msg-input');
+const fileInput   = document.getElementById('file-input');
+const previewBar  = document.getElementById('preview-bar');
+const typingWrap  = document.getElementById('typing-wrap');
+let pendingFiles  = [];
+
+// ── Berichten renderen ──────────────────────────────────────────────────
+function now() {
+  return new Date().toLocaleTimeString('nl-NL', {hour:'2-digit', minute:'2-digit'});
+}
+
+function addBubble(role, text, imgSrcs = []) {
+  const wrap = document.createElement('div');
+  wrap.className = `bubble-wrap ${role}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = `bubble ${role}`;
+
+  if (text) bubble.textContent = text;
+
+  imgSrcs.forEach(src => {
+    const img = document.createElement('img');
+    img.src = src;
+    bubble.appendChild(img);
+  });
+
+  const ts = document.createElement('div');
+  ts.className = 'ts';
+  ts.textContent = now();
+
+  wrap.appendChild(bubble);
+  wrap.appendChild(ts);
+  messagesEl.appendChild(wrap);
+  scrollToBottom();
+  return bubble;
+}
+
+function scrollToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function setTyping(show) {
+  typingWrap.className = show ? 'show' : '';
+  if (show) scrollToBottom();
+}
+
+// ── Bestandspreview ────────────────────────────────────────────────────
+fileInput.addEventListener('change', () => {
+  for (const file of fileInput.files) {
+    if (!file.type.startsWith('image/')) continue;
+    const url = URL.createObjectURL(file);
+    pendingFiles.push({file, url});
+    const item = document.createElement('div');
+    item.className = 'preview-item';
+    item.innerHTML = `<img src="${url}"><button class="remove-img" data-url="${url}">×</button>`;
+    previewBar.appendChild(item);
+  }
+  fileInput.value = '';
+  previewBar.className = pendingFiles.length ? 'show' : '';
+});
+
+previewBar.addEventListener('click', e => {
+  if (!e.target.classList.contains('remove-img')) return;
+  const url = e.target.dataset.url;
+  pendingFiles = pendingFiles.filter(p => p.url !== url);
+  e.target.closest('.preview-item').remove();
+  previewBar.className = pendingFiles.length ? 'show' : '';
+});
+
+document.getElementById('attach-btn').addEventListener('click', () => fileInput.click());
+
+// ── Versturen ──────────────────────────────────────────────────────────
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text && pendingFiles.length === 0) return;
+
+  const imgSrcs = pendingFiles.map(p => p.url);
+  addBubble('user', text, imgSrcs);
+
+  const fd = new FormData();
+  fd.append('session_id', sessionId);
+  fd.append('message', text);
+  pendingFiles.forEach(p => fd.append('images', p.file));
+
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  pendingFiles = [];
+  previewBar.innerHTML = '';
+  previewBar.className = '';
+
+  setTyping(true);
+  try {
+    const res = await fetch('/chat/api/message', {method:'POST', body: fd});
+    const data = await res.json();
+    setTyping(false);
+    if (data.response) {
+      addBubble('bot', data.response);
+    } else if (data.detail) {
+      addBubble('bot', '⚠️ ' + data.detail);
+    }
+  } catch (err) {
+    setTyping(false);
+    addBubble('bot', '⚠️ Verbindingsfout. Probeer het opnieuw.');
+  }
+}
+
+document.getElementById('send-btn').addEventListener('click', sendMessage);
+
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// Auto-resize textarea
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+
+// Welkomstbericht na 600ms
+setTimeout(() => {
+  addBubble('bot',
+    'Hallo! 👋 Ik ben AutoBot, de assistent van uw garage.\n\n' +
+    'Ik kan u helpen met:\n' +
+    '• Afspraken inplannen\n' +
+    '• Vragen over uw auto\n' +
+    '• Prijsindicaties\n' +
+    '• Foto\'s analyseren (schade, banden)\n\n' +
+    'Waarmee kan ik u vandaag helpen?'
+  );
+}, 600);
+</script>
+</body>
+</html>

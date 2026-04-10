@@ -2,22 +2,26 @@
 AutoGarage WhatsApp Chatbot – FastAPI applicatie
 
 Endpoints:
-  POST /webhook/whatsapp    – Twilio webhook voor inkomende berichten
-  GET  /                    – Welkomstpagina
-  GET  /admin               – Dashboard voor de garage (afsprakenoverzicht)
-  GET  /admin/api/appointments           – JSON API voor afspraken
-  PATCH /admin/api/appointments/{id}/status  – Status bijwerken
-  POST /dev/test-message    – Lokaal testen zonder Twilio (alleen in debug-modus)
+  POST /webhook/whatsapp               – Twilio webhook voor inkomende berichten
+  GET  /                               – Welkomstpagina
+  GET  /chat                           – Web-chat demo (geen WhatsApp nodig)
+  POST /chat/api/message               – Chat-API voor de web interface
+  GET  /admin                          – Dashboard voor de garage
+  GET  /admin/api/appointments         – JSON API voor afspraken
+  PATCH /admin/api/appointments/{id}/status – Status bijwerken
+  POST /dev/test-message               – Lokaal testen zonder Twilio
 """
 
 import asyncio
+import base64
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -207,6 +211,64 @@ async def dev_test_message(phone: str, body: str):
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "AutoGarage WhatsApp Chatbot"}
+
+
+# ─────────────────────────────────────────────
+# Web-chat (testen zonder WhatsApp/Twilio)
+# ─────────────────────────────────────────────
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    """Web-based chat-interface voor demo en testing."""
+    return templates.TemplateResponse("chat.html", {"request": request})
+
+
+@app.post("/chat/api/message")
+async def chat_api_message(
+    session_id: str = Form(...),
+    message: str = Form(default=""),
+    images: list[UploadFile] = File(default=[]),
+):
+    """
+    Verwerk een bericht vanuit de web-chat interface.
+    Accepteert optionele afbeeldingen als multipart-upload.
+    """
+    db = next(get_db())
+
+    img_content: list[dict] = []
+    photo_filenames: list[str] = []
+
+    for img_file in images:
+        if not img_file or not img_file.filename:
+            continue
+        content = await img_file.read()
+        if not content:
+            continue
+        media_type = (img_file.content_type or "image/jpeg").split(";")[0].strip()
+        b64 = base64.standard_b64encode(content).decode()
+        img_content.append({"data": b64, "media_type": media_type})
+
+        # Sla lokaal op voor het admin-dashboard
+        os.makedirs("uploads", exist_ok=True)
+        ext = "jpg" if "jpeg" in media_type else media_type.split("/")[-1]
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"web_{session_id[:8]}_{ts}.{ext}"
+        with open(os.path.join("uploads", filename), "wb") as f:
+            f.write(content)
+        photo_filenames.append(filename)
+
+    # Gebruik het sessie-ID als 'telefoonnummer' voor de DB
+    phone = f"web_{session_id}"
+
+    from services.ai_service import process_message
+    response = await process_message(
+        phone=phone,
+        message=message,
+        images=img_content,
+        db=db,
+        photo_filenames=photo_filenames,
+    )
+    return {"response": response}
 
 
 if __name__ == "__main__":
