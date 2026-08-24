@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ garage_naam }} – Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background: #f0f2f5; }
+    .navbar-brand { font-weight: 700; letter-spacing: .5px; }
+    .stat-card { border: none; border-radius: 12px; }
+    .apt-card { border: none; border-radius: 12px; cursor: pointer; transition: transform .15s, box-shadow .15s; }
+    .apt-card:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+    .badge-bevestigd  { background: #198754; }
+    .badge-geannuleerd{ background: #dc3545; }
+    .badge-voltooid   { background: #0d6efd; }
+    .filter-bar .btn  { border-radius: 20px; }
+    .filter-bar .btn.active { font-weight: 600; }
+    .section-label { font-size: .75rem; text-transform: uppercase; letter-spacing: 1px; color: #6c757d; }
+    #clock { font-size: .85rem; opacity: .85; }
+    .modal-header { background: #1e293b; color: #fff; }
+    .modal-header .btn-close { filter: invert(1); }
+    .detail-row { display: flex; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #f0f2f5; }
+    .detail-row:last-child { border-bottom: none; }
+    .photo-thumb { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 8px; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#1e293b">
+  <div class="container-fluid">
+    <span class="navbar-brand"><i class="bi bi-car-front-fill me-2"></i>{{ garage_naam }}</span>
+    <span class="text-white" id="clock"></span>
+  </div>
+</nav>
+
+<div class="container-fluid py-4 px-4">
+
+  <!-- Statistieken -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-white" style="background:#1e293b">
+        <div class="card-body"><p class="section-label text-white-50 mb-1">Totaal</p><h3 id="cnt-total">–</h3></div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-white bg-success">
+        <div class="card-body"><p class="section-label text-white-50 mb-1">Bevestigd</p><h3 id="cnt-bevestigd">–</h3></div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-white bg-danger">
+        <div class="card-body"><p class="section-label text-white-50 mb-1">Geannuleerd</p><h3 id="cnt-geannuleerd">–</h3></div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card stat-card text-white bg-primary">
+        <div class="card-body"><p class="section-label text-white-50 mb-1">Voltooid</p><h3 id="cnt-voltooid">–</h3></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filterrij -->
+  <div class="filter-bar d-flex flex-wrap gap-2 mb-4">
+    <button class="btn btn-dark active" onclick="setFilter('all',this)">Alle</button>
+    <button class="btn btn-outline-success" onclick="setFilter('bevestigd',this)">Bevestigd</button>
+    <button class="btn btn-outline-danger"  onclick="setFilter('geannuleerd',this)">Geannuleerd</button>
+    <button class="btn btn-outline-primary" onclick="setFilter('voltooid',this)">Voltooid</button>
+    <button class="btn btn-outline-secondary ms-auto" onclick="loadData()"><i class="bi bi-arrow-clockwise"></i> Vernieuwen</button>
+  </div>
+
+  <!-- Afspraken grid -->
+  <div class="row g-3" id="apt-grid">
+    <div class="col-12 text-center text-muted py-5">
+      <div class="spinner-border spinner-border-sm me-2"></div> Laden...
+    </div>
+  </div>
+</div>
+
+<!-- Detail Modal -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-calendar2-check me-2"></i>Afspraakdetails</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Sluiten</button>
+        <button class="btn btn-primary"  id="btn-voltooid"   onclick="setStatus('voltooid')"><i class="bi bi-check2-all me-1"></i>Voltooid</button>
+        <button class="btn btn-danger"   id="btn-annuleer"   onclick="setStatus('geannuleerd')"><i class="bi bi-x-circle me-1"></i>Annuleer</button>
+        <button class="btn btn-success"  id="btn-herbevestig" onclick="setStatus('bevestigd')" style="display:none"><i class="bi bi-arrow-counterclockwise me-1"></i>Herbevestig</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const SERVICE_LABELS = {
+  apk: 'APK Keuring', kleine_beurt: 'Kleine Beurt', grote_beurt: 'Grote Beurt',
+  apk_kleine_beurt: 'APK + Kleine Beurt', banden: 'Banden Wisselen',
+  remmen_voor: 'Remmen (voor)', remmen_achter: 'Remmen (achter)',
+  diagnose: 'Diagnose & Uitlezen', schade: 'Schade Beoordeling', overig: 'Overig'
+};
+const NL_DAYS   = ['zondag','maandag','dinsdag','woensdag','donderdag','vrijdag','zaterdag'];
+const NL_MONTHS = ['','januari','februari','maart','april','mei','juni',
+                   'juli','augustus','september','oktober','november','december'];
+
+let allData = [], currentFilter = 'all', currentId = null;
+
+function nlDate(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  return `${NL_DAYS[d.getDay()]} ${d.getDate()} ${NL_MONTHS[d.getMonth()+1]} ${d.getFullYear()}`;
+}
+function nlTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('nl-NL', {hour:'2-digit', minute:'2-digit'});
+}
+
+async function loadData() {
+  const res = await fetch('/admin/api/appointments');
+  allData = await res.json();
+  document.getElementById('cnt-total').textContent      = allData.length;
+  document.getElementById('cnt-bevestigd').textContent  = allData.filter(a=>a.status==='bevestigd').length;
+  document.getElementById('cnt-geannuleerd').textContent= allData.filter(a=>a.status==='geannuleerd').length;
+  document.getElementById('cnt-voltooid').textContent   = allData.filter(a=>a.status==='voltooid').length;
+  renderGrid();
+}
+
+function setFilter(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-bar .btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderGrid();
+}
+
+function renderGrid() {
+  const list = currentFilter === 'all' ? allData : allData.filter(a=>a.status===currentFilter);
+  const grid = document.getElementById('apt-grid');
+  if (!list.length) {
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-light text-center">Geen afspraken gevonden.</div></div>';
+    return;
+  }
+  grid.innerHTML = list.map(a => {
+    const svc   = SERVICE_LABELS[a.service_type] || a.service_type;
+    const badge = `badge-${a.status}`;
+    const auto  = [a.auto_merk, a.auto_model, a.kenteken ? `(${a.kenteken})` : ''].filter(Boolean).join(' ');
+    const prijs = (a.prijs_min && a.prijs_max) ? `€${a.prijs_min}–€${a.prijs_max}` : '–';
+    const foto  = a.foto_paths && a.foto_paths.length ? `<div class="card-footer text-muted small"><i class="bi bi-camera me-1"></i>${a.foto_paths.length} foto</div>` : '';
+    return `
+    <div class="col-sm-6 col-xl-4">
+      <div class="card apt-card shadow-sm h-100" onclick="openDetail(${a.id})">
+        <div class="card-header d-flex justify-content-between align-items-center bg-white border-bottom">
+          <strong>#${a.id} – ${svc}</strong>
+          <span class="badge ${badge} rounded-pill">${a.status}</span>
+        </div>
+        <div class="card-body">
+          <p class="mb-1"><i class="bi bi-person me-2 text-muted"></i>${a.klant_naam}</p>
+          <p class="mb-1"><i class="bi bi-calendar3 me-2 text-muted"></i>${nlDate(a.scheduled_datetime)}</p>
+          <p class="mb-1"><i class="bi bi-clock me-2 text-muted"></i>${nlTime(a.scheduled_datetime)} &nbsp;(±${a.duur_minuten} min)</p>
+          <p class="mb-1"><i class="bi bi-car-front me-2 text-muted"></i>${auto || '–'}</p>
+          <p class="mb-0"><i class="bi bi-currency-euro me-2 text-muted"></i>${prijs}</p>
+        </div>
+        ${foto}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openDetail(id) {
+  const a = allData.find(x=>x.id===id);
+  if (!a) return;
+  currentId = id;
+  const svc  = SERVICE_LABELS[a.service_type] || a.service_type;
+  const auto = [a.auto_merk, a.auto_model, a.bouwjaar ? `(${a.bouwjaar})` : ''].filter(Boolean).join(' ');
+  const prijs= (a.prijs_min && a.prijs_max) ? `€${a.prijs_min}–€${a.prijs_max}` : 'Niet ingeschat';
+
+  const photos = (a.foto_paths || []).length ? `
+    <hr>
+    <p class="section-label mb-2">Foto's</p>
+    <div class="row g-2">${(a.foto_paths||[]).map(p=>`
+      <div class="col-4">
+        <a href="/uploads/${p.split('/').pop()}" target="_blank">
+          <img src="/uploads/${p.split('/').pop()}" class="photo-thumb" onerror="this.closest('.col-4').style.display='none'">
+        </a>
+      </div>`).join('')}
+    </div>` : '';
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="row">
+      <div class="col-md-6">
+        <p class="section-label">Klant</p>
+        <div class="detail-row"><span class="text-muted">Naam</span><strong>${a.klant_naam}</strong></div>
+        <div class="detail-row"><span class="text-muted">Telefoon</span>${a.klant_telefoon}</div>
+        <div class="detail-row"><span class="text-muted">E-mail</span>${a.klant_email || '–'}</div>
+        <p class="section-label mt-3">Auto</p>
+        <div class="detail-row"><span class="text-muted">Merk/Model</span>${auto || '–'}</div>
+        <div class="detail-row"><span class="text-muted">Kenteken</span><strong>${a.kenteken || '–'}</strong></div>
+      </div>
+      <div class="col-md-6">
+        <p class="section-label">Afspraak</p>
+        <div class="detail-row"><span class="text-muted">Datum</span>${nlDate(a.scheduled_datetime)}</div>
+        <div class="detail-row"><span class="text-muted">Tijd</span>${nlTime(a.scheduled_datetime)}</div>
+        <div class="detail-row"><span class="text-muted">Service</span>${svc}</div>
+        <div class="detail-row"><span class="text-muted">Duur</span>±${a.duur_minuten} min</div>
+        <div class="detail-row"><span class="text-muted">Prijs</span>${prijs}</div>
+        <div class="detail-row"><span class="text-muted">Status</span><span class="badge badge-${a.status}">${a.status}</span></div>
+      </div>
+    </div>
+    ${a.probleem_omschrijving ? `<hr><p class="section-label">Probleemomschrijving</p><p>${a.probleem_omschrijving}</p>` : ''}
+    ${a.ai_notities ? `<p class="section-label">AI-notities voor monteur</p><div class="alert alert-warning py-2">${a.ai_notities}</div>` : ''}
+    ${photos}`;
+
+  // Knoppen
+  document.getElementById('btn-voltooid').style.display    = a.status === 'bevestigd' ? '' : 'none';
+  document.getElementById('btn-annuleer').style.display    = a.status === 'bevestigd' ? '' : 'none';
+  document.getElementById('btn-herbevestig').style.display = a.status !== 'bevestigd' ? '' : 'none';
+
+  new bootstrap.Modal(document.getElementById('detailModal')).show();
+}
+
+async function setStatus(status) {
+  if (!currentId) return;
+  const res = await fetch(`/admin/api/appointments/${currentId}/status?status=${status}`, {method:'PATCH'});
+  if (res.ok) {
+    bootstrap.Modal.getInstance(document.getElementById('detailModal')).hide();
+    await loadData();
+  }
+}
+
+// Klok
+function updateClock() {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleString('nl-NL', {weekday:'long', day:'numeric', month:'long', hour:'2-digit', minute:'2-digit'});
+}
+updateClock();
+setInterval(updateClock, 30000);
+
+// Auto-refresh elke 5 minuten
+setInterval(loadData, 300000);
+loadData();
+</script>
+</body>
+</html>

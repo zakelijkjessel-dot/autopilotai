@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Afspraakbevestiging – {{ garage_naam }}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f0f2f5; font-family: Arial, Helvetica, sans-serif; color: #333; }
+  .wrapper { max-width: 620px; margin: 32px auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,.10); }
+  .header  { background: #1e293b; color: #fff; padding: 36px 32px; text-align: center; }
+  .header h1 { font-size: 22px; margin-bottom: 6px; }
+  .header p  { font-size: 13px; opacity: .7; }
+  .badge-ok  { display: inline-block; background: #22c55e; color: #fff; border-radius: 20px; padding: 6px 18px; font-size: 13px; font-weight: 700; margin-bottom: 20px; }
+  .content   { padding: 32px; }
+  .content > p { margin-bottom: 16px; line-height: 1.6; }
+  .row       { display: flex; justify-content: space-between; align-items: flex-start; padding: 11px 0; border-bottom: 1px solid #f0f2f5; font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .lbl       { color: #6b7280; min-width: 140px; }
+  .val       { text-align: right; font-weight: 500; }
+  .price-box { margin: 20px 0; background: #f8fafc; border-left: 4px solid #3b82f6; border-radius: 4px; padding: 14px 16px; font-size: 14px; }
+  .price-box strong { font-size: 16px; }
+  .price-box small  { display: block; color: #6b7280; margin-top: 4px; }
+  .notes-box { margin: 20px 0; background: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 4px; padding: 14px 16px; font-size: 14px; }
+  .section   { margin-top: 24px; }
+  .section h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .8px; color: #6b7280; margin-bottom: 12px; }
+  .footer    { background: #f8fafc; padding: 20px 32px; text-align: center; font-size: 12px; color: #9ca3af; }
+  .divider   { border: none; border-top: 1px solid #f0f2f5; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>🔧 {{ garage_naam }}</h1>
+    <p>Uw afspraak is bevestigd</p>
+  </div>
+
+  <!-- Body -->
+  <div class="content">
+    <span class="badge-ok">✓ Afspraak bevestigd</span>
+
+    <p>Beste {{ appointment.klant_naam }},</p>
+    <p>Bedankt voor het inplannen van uw afspraak bij <strong>{{ garage_naam }}</strong>.
+       Hieronder vindt u een overzicht van uw afspraakgegevens.</p>
+
+    <!-- Afspraakoverzicht -->
+    <div class="section">
+      <h3>Afspraakdetails</h3>
+
+      <div class="row">
+        <span class="lbl">📅 Datum</span>
+        <span class="val">{{ appointment.scheduled_datetime | nl_date }}</span>
+      </div>
+      <div class="row">
+        <span class="lbl">🕐 Tijd</span>
+        <span class="val">{{ appointment.scheduled_datetime.strftime('%H:%M') }} uur</span>
+      </div>
+      <div class="row">
+        <span class="lbl">🔧 Service</span>
+        <span class="val">{{ appointment.service_type.replace('_', ' ').title() }}</span>
+      </div>
+      <div class="row">
+        <span class="lbl">⏱️ Geschatte duur</span>
+        <span class="val">±{{ appointment.duur_minuten }} minuten</span>
+      </div>
+
+      {% if appointment.auto_merk %}
+      <div class="row">
+        <span class="lbl">🚗 Auto</span>
+        <span class="val">
+          {{ appointment.auto_merk }} {{ appointment.auto_model or '' }}
+          {% if appointment.bouwjaar %}({{ appointment.bouwjaar }}){% endif %}
+        </span>
+      </div>
+      {% endif %}
+
+      {% if appointment.kenteken %}
+      <div class="row">
+        <span class="lbl">🔖 Kenteken</span>
+        <span class="val"><strong>{{ appointment.kenteken }}</strong></span>
+      </div>
+      {% endif %}
+
+      {% if appointment.probleem_omschrijving %}
+      <div class="row">
+        <span class="lbl">📝 Omschrijving</span>
+        <span class="val" style="max-width:280px;text-align:right">{{ appointment.probleem_omschrijving }}</span>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Prijsindicatie -->
+    {% if appointment.prijs_min and appointment.prijs_max %}
+    <div class="price-box">
+      <strong>💶 Prijsindicatie: €{{ appointment.prijs_min | int }} – €{{ appointment.prijs_max | int }}</strong>
+      <small>Dit is een indicatie op basis van de opgegeven informatie. De uiteindelijke prijs kan afwijken.</small>
+    </div>
+    {% endif %}
+
+    <!-- AI notities -->
+    {% if appointment.ai_notities %}
+    <div class="notes-box">
+      <strong>ℹ️ Aandachtspunten</strong><br>
+      <span style="font-size:13px">{{ appointment.ai_notities }}</span>
+    </div>
+    {% endif %}
+
+    <!-- Garagegegevens -->
+    <div class="section">
+      <h3>Onze locatie</h3>
+      <p>
+        📍 {{ garage_adres }}<br>
+        📞 {{ garage_telefoon }}<br>
+        ✉️ {{ garage_email }}
+      </p>
+    </div>
+
+    <hr class="divider" style="margin-top:24px">
+    <p style="font-size:13px;color:#6b7280;margin-top:16px">
+      <strong>Kunt u niet komen?</strong> Stuur dan een WhatsApp-bericht om uw afspraak te verplaatsen of annuleren.
+      We helpen u graag een nieuw tijdstip te vinden.
+    </p>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>Dit is een automatische e-mail van {{ garage_naam }}.</p>
+    <p style="margin-top:4px">Afspraak-ID: <strong>#{{ appointment.id }}</strong></p>
+  </div>
+</div>
+</body>
+</html>
