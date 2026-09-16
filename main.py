@@ -57,7 +57,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Serveer geüploade foto's als statische bestanden
+# Serveer geüploade foto's als statische bestanden.
+# Map alvast aanmaken: de mount gebeurt bij het importeren, vóór de lifespan-startup,
+# en 'uploads/' is gitignored dus ontbreekt op een verse checkout.
+os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 templates = Jinja2Templates(directory="templates")
@@ -130,9 +133,9 @@ async def admin_dashboard(request: Request):
         .all()
     )
     return templates.TemplateResponse(
+        request,
         "admin.html",
         {
-            "request": request,
             "appointments": appointments,
             "garage_naam": settings.GARAGE_NAAM,
         },
@@ -201,8 +204,7 @@ async def dev_test_message(phone: str, body: str):
     response = await process_message(
         phone=phone,
         message=body,
-        media_urls=[],
-        media_types=[],
+        images=[],
         db=db,
     )
     return {"phone": phone, "response": response}
@@ -220,7 +222,7 @@ async def health():
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_page(request: Request):
     """Web-based chat-interface voor demo en testing."""
-    return templates.TemplateResponse("chat.html", {"request": request})
+    return templates.TemplateResponse(request, "chat.html", {})
 
 
 @app.post("/chat/api/message")
