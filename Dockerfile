@@ -13,8 +13,8 @@ COPY . .
 # Maak uploads-map aan
 RUN mkdir -p uploads
 
-# Expose poort
+# Expose poort (lokaal; Railway routeert via $PORT)
 EXPOSE 8000
 
-# Start de applicatie
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start de applicatie — luister op $PORT (Railway) of 8000 (lokaal)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
