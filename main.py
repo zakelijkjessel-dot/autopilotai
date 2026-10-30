@@ -215,6 +215,20 @@ async def health():
     return {"status": "ok", "service": "AutoGarage WhatsApp Chatbot"}
 
 
+@app.get("/debug")
+async def debug_config():
+    """Controleer of alle environment-variabelen correct zijn ingeladen."""
+    api_key = settings.ANTHROPIC_API_KEY
+    return {
+        "anthropic_api_key": f"{api_key[:10]}...{api_key[-4:]}" if len(api_key) > 14 else ("NIET INGESTELD" if not api_key else "te kort"),
+        "garage_naam": settings.GARAGE_NAAM,
+        "database_url": settings.DATABASE_URL.split("///")[0] + "///***",
+        "base_url": settings.BASE_URL,
+        "twilio_sid": settings.TWILIO_ACCOUNT_SID[:6] + "***" if settings.TWILIO_ACCOUNT_SID else "niet ingesteld",
+        "smtp_user": settings.SMTP_USER or "niet ingesteld",
+    }
+
+
 # ─────────────────────────────────────────────
 # Web-chat (testen zonder WhatsApp/Twilio)
 # ─────────────────────────────────────────────
@@ -235,6 +249,15 @@ async def chat_api_message(
     Verwerk een bericht vanuit de web-chat interface.
     Accepteert optionele afbeeldingen als multipart-upload.
     """
+    logger.info("POST /chat/api/message – session=%s msg=%r", session_id[:8], message[:80])
+
+    if not settings.ANTHROPIC_API_KEY:
+        logger.error("ANTHROPIC_API_KEY is niet geconfigureerd!")
+        return JSONResponse(
+            status_code=503,
+            content={"response": "De bot is nog niet geconfigureerd (API-key ontbreekt). Neem contact op met de beheerder."},
+        )
+
     db = next(get_db())
 
     img_content: list[dict] = []
@@ -262,15 +285,23 @@ async def chat_api_message(
     # Gebruik het sessie-ID als 'telefoonnummer' voor de DB
     phone = f"web_{session_id}"
 
-    from services.ai_service import process_message
-    response = await process_message(
-        phone=phone,
-        message=message,
-        images=img_content,
-        db=db,
-        photo_filenames=photo_filenames,
-    )
-    return {"response": response}
+    try:
+        from services.ai_service import process_message
+        response = await process_message(
+            phone=phone,
+            message=message,
+            images=img_content,
+            db=db,
+            photo_filenames=photo_filenames,
+        )
+        logger.info("Antwoord klaar – %d tekens", len(response))
+        return {"response": response}
+    except Exception as exc:
+        logger.exception("Fout bij verwerken chatbericht: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"response": f"Technische fout: {type(exc).__name__}: {exc}"},
+        )
 
 
 if __name__ == "__main__":
