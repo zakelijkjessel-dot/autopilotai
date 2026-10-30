@@ -20,7 +20,16 @@ from services.email_service import send_confirmation_email
 
 logger = logging.getLogger(__name__)
 
-_async_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+_async_client: anthropic.AsyncAnthropic | None = None
+
+
+def _get_async_client() -> anthropic.AsyncAnthropic:
+    global _async_client
+    if _async_client is None:
+        if not settings.ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY is niet geconfigureerd. Voeg de key toe via Railway Variables.")
+        _async_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    return _async_client
 
 MAX_HISTORY = 20
 
@@ -382,8 +391,9 @@ async def process_message(
     booked: list[models.Appointment] = []
     final_text = ""
 
+    client = _get_async_client()
     for _ in range(6):
-        response = await _async_client.messages.create(
+        response = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
             system=get_system_prompt(),
