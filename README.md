@@ -94,7 +94,7 @@ De app draait op `http://localhost:8000`.
 
 ## Testen zonder WhatsApp
 
-Open de web-chat demo in je browser:
+Zet eerst in `.env`: `ENABLE_WEB_CHAT=true`. Open daarna de web-chat demo in je browser:
 
 ```
 http://localhost:8000/chat

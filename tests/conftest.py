@@ -8,6 +8,8 @@ os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["TWILIO_ACCOUNT_SID"] = ""
 os.environ["TWILIO_AUTH_TOKEN"] = ""
 os.environ["ENABLE_DEV_ROUTES"] = "false"
+os.environ["ENABLE_WEB_CHAT"] = "false"
+os.environ["ADMIN_PASSWORD"] = ""
 
 import pytest  # noqa: E402
 

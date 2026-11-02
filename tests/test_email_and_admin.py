@@ -55,16 +55,19 @@ async def test_smtp_fout_wordt_gelogd_en_gooit_niet(monkeypatch):
     await email_service.send_confirmation_email(_apt())  # mag niet crashen
 
 
-def test_admin_status_wijzigen(db):
+def test_admin_status_wijzigen(db, monkeypatch):
+    monkeypatch.setattr(settings, "ADMIN_USER", "admin")
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", "geheim")
+    auth = ("admin", "geheim")
     apt = _apt(id=None, scheduled_datetime=datetime.now() + timedelta(days=3), status="bevestigd")
     db.add(apt)
     db.commit()
     db.refresh(apt)
     with TestClient(main.app) as c:
-        r = c.patch(f"/admin/api/appointments/{apt.id}/status", params={"status": "voltooid"})
+        r = c.patch(f"/admin/api/appointments/{apt.id}/status", params={"status": "voltooid"}, auth=auth)
         assert r.status_code == 200
-        r = c.patch(f"/admin/api/appointments/{apt.id}/status", params={"status": "onzin"})
+        r = c.patch(f"/admin/api/appointments/{apt.id}/status", params={"status": "onzin"}, auth=auth)
         assert r.status_code == 400
-        rows = c.get("/admin/api/appointments").json()
+        rows = c.get("/admin/api/appointments", auth=auth).json()
     assert rows[0]["status"] == "voltooid"
     assert "klant_telefoon" in rows[0]

@@ -22,7 +22,10 @@ from typing import Optional
 
 import uvicorn
 from twilio.request_validator import RequestValidator
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+import secrets
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -65,6 +68,30 @@ os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 templates = Jinja2Templates(directory="templates")
+
+_basic = HTTPBasic(auto_error=False)
+
+
+def require_admin(credentials: Optional[HTTPBasicCredentials] = Depends(_basic)) -> None:
+    """Basic-auth voor het admin-dashboard. Faalt dicht: zonder ADMIN_PASSWORD geen toegang."""
+    if not settings.ADMIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="Admin niet geconfigureerd (ADMIN_PASSWORD ontbreekt)")
+    ok = credentials is not None and secrets.compare_digest(
+        credentials.username.encode(), settings.ADMIN_USER.encode()
+    ) and secrets.compare_digest(
+        credentials.password.encode(), settings.ADMIN_PASSWORD.encode()
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=401,
+            detail="Inloggen vereist",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+def require_web_chat() -> None:
+    if not settings.ENABLE_WEB_CHAT:
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 # ─────────────────────────────────────────────
@@ -128,7 +155,7 @@ async def root():
     )
 
 
-@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 async def admin_dashboard(request: Request):
     db = next(get_db())
     appointments = (
@@ -146,7 +173,7 @@ async def admin_dashboard(request: Request):
     )
 
 
-@app.get("/admin/api/appointments")
+@app.get("/admin/api/appointments", dependencies=[Depends(require_admin)])
 async def get_appointments_api(status: Optional[str] = None):
     db = next(get_db())
     query = db.query(models.Appointment).order_by(
@@ -180,7 +207,7 @@ async def get_appointments_api(status: Optional[str] = None):
     ]
 
 
-@app.patch("/admin/api/appointments/{appointment_id}/status")
+@app.patch("/admin/api/appointments/{appointment_id}/status", dependencies=[Depends(require_admin)])
 async def update_appointment_status(appointment_id: int, status: str):
     valid = {"bevestigd", "geannuleerd", "voltooid"}
     if status not in valid:
@@ -244,13 +271,13 @@ async def debug_config():
 # Web-chat (testen zonder WhatsApp/Twilio)
 # ─────────────────────────────────────────────
 
-@app.get("/chat", response_class=HTMLResponse)
+@app.get("/chat", response_class=HTMLResponse, dependencies=[Depends(require_web_chat)])
 async def chat_page(request: Request):
     """Web-based chat-interface voor demo en testing."""
     return templates.TemplateResponse(request, "chat.html", {})
 
 
-@app.post("/chat/api/message")
+@app.post("/chat/api/message", dependencies=[Depends(require_web_chat)])
 async def chat_api_message(
     session_id: str = Form(...),
     message: str = Form(default=""),

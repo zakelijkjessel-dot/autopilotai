@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # Dev-routes (/debug en /dev/test-message) alleen lokaal aanzetten
     ENABLE_DEV_ROUTES: bool = False
 
+    # Web-chat (/chat) alleen aanzetten voor lokaal testen of een demo
+    ENABLE_WEB_CHAT: bool = False
+
+    # Admin-dashboard: basic-auth. Zonder ADMIN_PASSWORD is het dashboard uitgeschakeld.
+    ADMIN_USER: str = "admin"
+    ADMIN_PASSWORD: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

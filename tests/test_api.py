@@ -15,19 +15,28 @@ def client(db):
         yield c
 
 
-def test_health_en_pagina_s(client):
+def test_health_en_pagina_s(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_WEB_CHAT", True)
     assert client.get("/health").status_code == 200
     assert client.get("/chat").status_code == 200
     assert client.get("/").status_code == 200
 
 
+def test_web_chat_is_standaard_uit(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_WEB_CHAT", False)
+    assert client.get("/chat").status_code == 404
+    assert client.post("/chat/api/message", data={"session_id": "s1", "message": "hoi"}).status_code == 404
+
+
 def test_chat_zonder_api_key_geeft_503(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_WEB_CHAT", True)
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "")
     r = client.post("/chat/api/message", data={"session_id": "s1", "message": "hoi"})
     assert r.status_code == 503
 
 
 def test_chat_weigert_pdf_upload(client, monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_WEB_CHAT", True)
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "sk-test")
     r = client.post(
         "/chat/api/message",
@@ -100,3 +109,21 @@ async def test_handler_slaat_pdf_media_over(monkeypatch):
     download.assert_not_called()
     assert process.call_args.kwargs["images"] == []
     send.assert_awaited()
+
+
+def test_admin_zonder_wachtwoord_is_uitgeschakeld(client, monkeypatch):
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", "")
+    assert client.get("/admin").status_code == 503
+    assert client.get("/admin/api/appointments").status_code == 503
+
+
+def test_admin_vereist_inloggen(client, monkeypatch):
+    monkeypatch.setattr(settings, "ADMIN_USER", "admin")
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD", "goed-wachtwoord")
+    assert client.get("/admin").status_code == 401
+    assert client.get("/admin/api/appointments").status_code == 401
+    assert client.get("/admin/api/appointments", auth=("admin", "fout")).status_code == 401
+    assert client.get("/admin/api/appointments", auth=("admin", "goed-wachtwoord")).status_code == 200
+    assert client.get("/admin", auth=("admin", "goed-wachtwoord")).status_code == 200
+    r = client.patch("/admin/api/appointments/1/status", params={"status": "voltooid"})
+    assert r.status_code == 401
