@@ -27,7 +27,7 @@ def _get_async_client() -> anthropic.AsyncAnthropic:
     global _async_client
     if _async_client is None:
         if not settings.ANTHROPIC_API_KEY:
-            raise RuntimeError("ANTHROPIC_API_KEY is niet geconfigureerd.")
+            raise RuntimeError("ANTHROPIC_API_KEY is niet geconfigureerd. Voeg de key toe via Railway Variables.")
         _async_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
     return _async_client
 
@@ -390,8 +390,8 @@ async def process_message(
     # Agentic loop
     booked: list[models.Appointment] = []
     final_text = ""
-    client = _get_async_client()
 
+    client = _get_async_client()
     for _ in range(6):
         response = await client.messages.create(
             model="claude-sonnet-4-6",

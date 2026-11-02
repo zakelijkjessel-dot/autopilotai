@@ -300,7 +300,7 @@ async def chat_api_message(
         logger.exception("Fout bij verwerken chatbericht: %s", exc)
         return JSONResponse(
             status_code=500,
-            content={"response": f"Technische fout: {type(exc).__name__}: {exc}"},
+            content={"response": f"Er is een technische fout opgetreden: {type(exc).__name__}: {exc}"},
         )
 
 
