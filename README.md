@@ -136,6 +136,18 @@ Functionaliteiten:
 
 ---
 
+## Tests draaien
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+De tests gebruiken een eigen SQLite-database en nep-clients: er worden geen echte
+berichten verstuurd en er wordt niet met de Claude-API gesproken.
+
+---
+
 ## Uitrollen met Docker
 
 ```bash

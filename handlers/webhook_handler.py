@@ -3,6 +3,7 @@ Webhook-handler: verwerkt inkomende WhatsApp-berichten van Twilio.
 Downloadt media-bestanden vooraf zodat ai_service ontkoppeld blijft van Twilio.
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -17,6 +18,9 @@ from services.ai_service import process_message
 from services.whatsapp_service import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
+
+# Formaten die Claude als afbeelding kan verwerken
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 _ERROR_MSG = (
     "Sorry, er is een technisch probleem opgetreden. 😔\n"
@@ -82,9 +86,14 @@ async def handle_incoming_message(
         images: list[dict] = []
         photo_filenames: list[str] = []
 
-        for i, url in enumerate(media_urls):
+        for i, (url, mtype) in enumerate(zip(media_urls, media_types)):
+            if mtype not in SUPPORTED_IMAGE_TYPES:
+                logger.info("Media met type %s overgeslagen (geen ondersteunde afbeelding)", mtype)
+                continue
             try:
-                img_dict, filename = _download_twilio_image(url, phone, i)
+                img_dict, filename = await asyncio.to_thread(
+                    _download_twilio_image, url, phone, i
+                )
                 images.append(img_dict)
                 photo_filenames.append(filename)
             except Exception as exc:

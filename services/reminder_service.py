@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import settings
+from config import now_local, settings
 from database import SessionLocal
 import models
 from services.whatsapp_service import send_whatsapp_message
@@ -20,46 +20,60 @@ async def _check_and_send_reminders() -> None:
     """Controleer elke 30 minuten op afspraken die een herinnering nodig hebben."""
     db = SessionLocal()
     try:
-        now = datetime.now()
+        now = now_local()
 
         # 24-uurs herinnering: afspraken die over 23:30–24:30 uur beginnen
         window_24h_start = now + timedelta(hours=23, minutes=30)
         window_24h_end = now + timedelta(hours=24, minutes=30)
 
-        for apt in (
-            db.query(models.Appointment)
-            .filter(
-                models.Appointment.status == "bevestigd",
-                models.Appointment.reminder_24h_sent.is_(False),
-                models.Appointment.scheduled_datetime >= window_24h_start,
-                models.Appointment.scheduled_datetime <= window_24h_end,
-            )
-            .all()
-        ):
-            await _send_reminder(apt, "24h")
-            apt.reminder_24h_sent = True
-            db.commit()
+        for apt in _due_appointments(db, "reminder_24h_sent", window_24h_start, window_24h_end):
+            if await _safe_send_reminder(apt, "24h"):
+                apt.reminder_24h_sent = True
+                db.commit()
 
         # 1-uurs herinnering: afspraken die over 45–75 minuten beginnen
         window_1h_start = now + timedelta(minutes=45)
         window_1h_end = now + timedelta(minutes=75)
 
-        for apt in (
-            db.query(models.Appointment)
-            .filter(
-                models.Appointment.status == "bevestigd",
-                models.Appointment.reminder_1h_sent.is_(False),
-                models.Appointment.scheduled_datetime >= window_1h_start,
-                models.Appointment.scheduled_datetime <= window_1h_end,
-            )
-            .all()
-        ):
-            await _send_reminder(apt, "1h")
-            apt.reminder_1h_sent = True
-            db.commit()
+        for apt in _due_appointments(db, "reminder_1h_sent", window_1h_start, window_1h_end):
+            if await _safe_send_reminder(apt, "1h"):
+                apt.reminder_1h_sent = True
+                db.commit()
 
     finally:
         db.close()
+
+
+def _due_appointments(db, flag: str, start: datetime, end: datetime) -> list[models.Appointment]:
+    """Bevestigde afspraken in het tijdvak waarvoor de herinnering nog niet is verstuurd.
+
+    Afspraken die via de web-chat zijn gemaakt (klant_telefoon begint met 'web_')
+    hebben geen WhatsApp-nummer en krijgen geen herinnering.
+    """
+    column = getattr(models.Appointment, flag)
+    return (
+        db.query(models.Appointment)
+        .filter(
+            models.Appointment.status == "bevestigd",
+            column.is_(False),
+            models.Appointment.scheduled_datetime >= start,
+            models.Appointment.scheduled_datetime <= end,
+            ~models.Appointment.klant_telefoon.startswith("web_"),
+        )
+        .all()
+    )
+
+
+async def _safe_send_reminder(appointment: models.Appointment, soort: str) -> bool:
+    """Verstuur één herinnering; een fout bij één afspraak stopt de rest niet."""
+    try:
+        await _send_reminder(appointment, soort)
+        return True
+    except Exception as exc:
+        logger.error(
+            "Herinnering (%s) voor afspraak #%s mislukt: %s", soort, appointment.id, exc
+        )
+        return False
 
 
 async def _send_reminder(appointment: models.Appointment, soort: str) -> None:

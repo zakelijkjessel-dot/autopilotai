@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from pydantic_settings import BaseSettings
 
 
@@ -27,7 +30,21 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./garage.db"
     BASE_URL: str = "http://localhost:8000"
 
+    # Tijdzone van de garage: afspraken en herinneringen gebruiken lokale tijd
+    TIMEZONE: str = "Europe/Amsterdam"
+
+    # Claude-model dat de bot gebruikt
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
+
+    # Dev-routes (/debug en /dev/test-message) alleen lokaal aanzetten
+    ENABLE_DEV_ROUTES: bool = False
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()
+
+
+def now_local() -> datetime:
+    """Huidige lokale tijd van de garage, naive zoals opgeslagen in de database."""
+    return datetime.now(ZoneInfo(settings.TIMEZONE)).replace(tzinfo=None)

@@ -6,14 +6,14 @@ zodat deze service volledig ontkoppeld is van Twilio of andere media-bronnen.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Optional
 
 import anthropic
 from sqlalchemy.orm import Session
 
 import models
-from config import settings
+from config import now_local, settings
 from database import SessionLocal
 from prompts.system_prompt import get_system_prompt
 from services.email_service import send_confirmation_email
@@ -124,6 +124,59 @@ _DAGEN = {0: "maandag", 1: "dinsdag", 2: "woensdag", 3: "donderdag",
 # Tool-uitvoering (synchroon / snel)
 # ─────────────────────────────────────────────
 
+def _opening_hours_error(dt: datetime, duur: int) -> Optional[str]:
+    """Geef een foutmelding als de dienst buiten de openingstijden valt of in het verleden ligt."""
+    if dt < now_local():
+        return "Dit tijdstip ligt in het verleden. Kies een toekomstige datum."
+    wd = dt.weekday()
+    if wd == 6:
+        return "De garage is op zondag gesloten. Kies een andere dag."
+    if wd == 5:
+        open_t, close_t, label = time(8, 0), time(13, 0), "zaterdag"
+    else:
+        open_t, close_t, label = time(8, 0), time(17, 30), "werkdagen"
+    end = dt + timedelta(minutes=duur)
+    if dt.time() < open_t or dt.time() >= close_t:
+        return f"Op {label} zijn we open van {open_t:%H:%M}–{close_t:%H:%M}."
+    if end.date() != dt.date() or end.time() > close_t:
+        return (
+            f"Deze dienst duurt ±{duur} min en past niet voor sluitingstijd "
+            f"({close_t:%H:%M}). Kies een eerder tijdstip."
+        )
+    return None
+
+
+def _conflicts(
+    dt: datetime, duur: int, db: Session, exclude_id: Optional[int] = None
+) -> list[models.Appointment]:
+    """Bevestigde afspraken die overlappen met het gevraagde tijdvak."""
+    end_dt = dt + timedelta(minutes=duur)
+    query = db.query(models.Appointment).filter(
+        models.Appointment.status == "bevestigd",
+        models.Appointment.scheduled_datetime < end_dt,
+    )
+    if exclude_id is not None:
+        query = query.filter(models.Appointment.id != exclude_id)
+    return [
+        a for a in query.all()
+        if (a.scheduled_datetime + timedelta(minutes=a.duur_minuten or 60)) > dt
+    ]
+
+
+def _alternatives(
+    dt: datetime, duur: int, db: Session, exclude_id: Optional[int] = None
+) -> list[str]:
+    """Maximaal drie vrije tijden rond het gevraagde tijdstip."""
+    alts: list[str] = []
+    for offset in [30, 60, 90, 120, 150, -30, -60]:
+        alt = dt + timedelta(minutes=offset)
+        if _opening_hours_error(alt, duur) is None and not _conflicts(alt, duur, db, exclude_id):
+            alts.append(alt.strftime("%H:%M"))
+        if len(alts) >= 3:
+            break
+    return alts
+
+
 def _check_availability(args: dict, db: Session) -> str:
     datum, tijd = args["datum"], args["tijd"]
     duur = int(args.get("duur_minuten") or 60)
@@ -132,49 +185,13 @@ def _check_availability(args: dict, db: Session) -> str:
     except ValueError:
         return "Ongeldige datum- of tijdnotatie. Gebruik YYYY-MM-DD en HH:MM."
 
-    wd = dt.weekday()
-    if wd == 6:
-        return "De garage is op zondag gesloten. Kies een andere dag."
-    if wd == 5 and (dt.hour < 8 or dt.hour >= 13):
-        return "Op zaterdag zijn we open van 08:00–13:00."
-    if wd < 5 and (dt.hour < 8 or (dt.hour == 17 and dt.minute > 30) or dt.hour >= 18):
-        return "Op werkdagen zijn we open van 08:00–17:30."
-    if dt < datetime.now():
-        return "Dit tijdstip ligt in het verleden. Kies een toekomstige datum."
-
-    end_dt = dt + timedelta(minutes=duur)
-    existing = db.query(models.Appointment).filter(
-        models.Appointment.status == "bevestigd",
-        models.Appointment.scheduled_datetime < end_dt,
-    ).all()
-    conflicts = [a for a in existing if (a.scheduled_datetime + timedelta(minutes=a.duur_minuten or 60)) > dt]
-
-    if not conflicts:
+    err = _opening_hours_error(dt, duur)
+    if err:
+        return err
+    if not _conflicts(dt, duur, db):
         return f"Het tijdstip {tijd} op {datum} is beschikbaar voor {duur} minuten."
 
-    alts: list[str] = []
-    for offset in [30, 60, 90, 120, 150, -30, -60]:
-        alt = dt + timedelta(minutes=offset)
-        alt_end = alt + timedelta(minutes=duur)
-        aw = alt.weekday()
-        if aw == 6 or (aw == 5 and (alt.hour < 8 or alt.hour >= 13)):
-            continue
-        if aw < 5 and (alt.hour < 8 or alt.hour >= 18):
-            continue
-        if alt < datetime.now():
-            continue
-        overlap = [
-            a for a in db.query(models.Appointment).filter(
-                models.Appointment.status == "bevestigd",
-                models.Appointment.scheduled_datetime < alt_end,
-            ).all()
-            if (a.scheduled_datetime + timedelta(minutes=a.duur_minuten or 60)) > alt
-        ]
-        if not overlap:
-            alts.append(alt.strftime("%H:%M"))
-        if len(alts) >= 3:
-            break
-
+    alts = _alternatives(dt, duur, db)
     alts_str = ", ".join(alts) if alts else "geen vrije tijden op deze dag"
     return f"Het tijdstip {tijd} op {datum} is bezet. Alternatieven: {alts_str}."
 
@@ -186,6 +203,20 @@ def _book_appointment(
         dt = datetime.strptime(f"{args['datum']} {args['tijd']}", "%Y-%m-%d %H:%M")
     except (ValueError, KeyError):
         return "Ongeldige datum of tijd.", None
+
+    duur = int(args.get("duur_minuten") or 60)
+
+    # Server-side controle: ook als de AI de beschikbaarheid overslaat, wordt er niet dubbel geboekt
+    err = _opening_hours_error(dt, duur)
+    if err:
+        return f"Afspraak NIET geboekt: {err}", None
+    if _conflicts(dt, duur, db):
+        alts = _alternatives(dt, duur, db)
+        alts_str = ", ".join(alts) if alts else "geen vrije tijden op deze dag"
+        return (
+            f"Afspraak NIET geboekt: {args['tijd']} op {args['datum']} is al bezet. "
+            f"Alternatieven: {alts_str}."
+        ), None
 
     apt = models.Appointment(
         klant_naam=args["klant_naam"],
@@ -199,7 +230,7 @@ def _book_appointment(
         probleem_omschrijving=args.get("probleem_omschrijving"),
         foto_paths=[],
         scheduled_datetime=dt,
-        duur_minuten=int(args.get("duur_minuten") or 60),
+        duur_minuten=duur,
         prijs_min=args.get("prijs_min"),
         prijs_max=args.get("prijs_max"),
         status="bevestigd",
@@ -269,10 +300,25 @@ def _reschedule_appointment(args: dict, phone: str, db: Session) -> str:
     ).first()
     if not apt:
         return f"Afspraak #{args['afspraak_id']} niet gevonden."
+    if apt.status != "bevestigd":
+        return f"Afspraak #{apt.id} is {apt.status} en kan niet verplaatst worden."
     try:
         nieuwe_dt = datetime.strptime(f"{args['nieuwe_datum']} {args['nieuwe_tijd']}", "%Y-%m-%d %H:%M")
     except ValueError:
         return "Ongeldige datum of tijd."
+
+    duur = apt.duur_minuten or 60
+    err = _opening_hours_error(nieuwe_dt, duur)
+    if err:
+        return f"Afspraak niet verplaatst: {err}"
+    if _conflicts(nieuwe_dt, duur, db, exclude_id=apt.id):
+        alts = _alternatives(nieuwe_dt, duur, db, exclude_id=apt.id)
+        alts_str = ", ".join(alts) if alts else "geen vrije tijden op deze dag"
+        return (
+            f"Afspraak niet verplaatst: {args['nieuwe_tijd']} op {args['nieuwe_datum']} is bezet. "
+            f"Alternatieven: {alts_str}."
+        )
+
     apt.scheduled_datetime = nieuwe_dt
     apt.reminder_24h_sent = False
     apt.reminder_1h_sent = False
@@ -333,18 +379,6 @@ def _strip_images(history: list[dict]) -> list[dict]:
     return result
 
 
-def _attach_photos(phone: str, filenames: list[str], db: Session) -> None:
-    apt = (
-        db.query(models.Appointment)
-        .filter(models.Appointment.klant_telefoon == phone)
-        .order_by(models.Appointment.created_at.desc())
-        .first()
-    )
-    if apt:
-        apt.foto_paths = filenames
-        db.commit()
-
-
 # ─────────────────────────────────────────────
 # Hoofd-entrypoint
 # ─────────────────────────────────────────────
@@ -394,7 +428,7 @@ async def process_message(
     client = _get_async_client()
     for _ in range(6):
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
+            model=settings.ANTHROPIC_MODEL,
             max_tokens=1024,
             system=get_system_prompt(),
             tools=TOOLS,
@@ -415,7 +449,9 @@ async def process_message(
             if apt:
                 booked.append(apt)
                 if photo_filenames:
-                    _attach_photos(phone, photo_filenames, db)
+                    # Koppel de foto's aan de zojuist geboekte afspraak
+                    apt.foto_paths = photo_filenames
+                    db.commit()
             tool_results.append({"type": "tool_result", "tool_use_id": tc.id, "content": result_text})
         messages.append({"role": "user", "content": tool_results})
 

@@ -1,12 +1,10 @@
-from datetime import datetime
-
-from config import settings
+from config import now_local, settings
 
 _DAGEN = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
 
 
 def get_system_prompt() -> str:
-    now = datetime.now()
+    now = now_local()
     dag = _DAGEN[now.weekday()]
 
     return f"""Je bent AutoBot, de vriendelijke WhatsApp-assistent van {settings.GARAGE_NAAM}.

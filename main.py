@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Optional
 
 import uvicorn
+from twilio.request_validator import RequestValidator
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from config import settings
 from database import get_db, init_db
-from handlers.webhook_handler import handle_incoming_message
+from handlers.webhook_handler import SUPPORTED_IMAGE_TYPES, handle_incoming_message
 from services.reminder_service import start_reminder_scheduler
 import models
 
@@ -71,30 +72,33 @@ templates = Jinja2Templates(directory="templates")
 # ─────────────────────────────────────────────
 
 @app.post("/webhook/whatsapp", response_class=HTMLResponse)
-async def whatsapp_webhook(
-    request: Request,
-    From: str = Form(...),
-    Body: str = Form(default=""),
-    NumMedia: int = Form(default=0),
-    MediaUrl0: Optional[str] = Form(default=None),
-    MediaUrl1: Optional[str] = Form(default=None),
-    MediaUrl2: Optional[str] = Form(default=None),
-    MediaContentType0: Optional[str] = Form(default=None),
-    MediaContentType1: Optional[str] = Form(default=None),
-    MediaContentType2: Optional[str] = Form(default=None),
-):
-    phone = From.replace("whatsapp:", "")
+async def whatsapp_webhook(request: Request):
+    form = await request.form()
+
+    # Controleer dat het verzoek echt van Twilio komt (voorkomt nep-berichten en kosten)
+    if settings.TWILIO_AUTH_TOKEN:
+        validator = RequestValidator(settings.TWILIO_AUTH_TOKEN)
+        url = f"{settings.BASE_URL.rstrip('/')}/webhook/whatsapp"
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not validator.validate(url, dict(form), signature):
+            logger.warning("Webhook geweigerd: ongeldige Twilio-handtekening (verwacht URL %s)", url)
+            raise HTTPException(status_code=403, detail="Ongeldige handtekening")
+    else:
+        logger.warning("TWILIO_AUTH_TOKEN ontbreekt: webhook-handtekening wordt NIET gecontroleerd")
+
+    from_value = form.get("From")
+    if not from_value:
+        raise HTTPException(status_code=400, detail="Ontbrekend veld: From")
+    Body = str(form.get("Body", "") or "")
+    phone = from_value.replace("whatsapp:", "")
 
     media_urls: list[str] = []
     media_types: list[str] = []
-    for url, mtype in [
-        (MediaUrl0, MediaContentType0),
-        (MediaUrl1, MediaContentType1),
-        (MediaUrl2, MediaContentType2),
-    ]:
+    for i in range(3):
+        url = form.get(f"MediaUrl{i}")
         if url:
-            media_urls.append(url)
-            media_types.append(mtype or "image/jpeg")
+            media_urls.append(str(url))
+            media_types.append(str(form.get(f"MediaContentType{i}") or "image/jpeg"))
 
     # Verwerk het bericht asynchroon; geef Twilio direct een lege TwiML-response
     asyncio.create_task(
@@ -198,7 +202,9 @@ async def update_appointment_status(appointment_id: int, status: str):
 
 @app.post("/dev/test-message")
 async def dev_test_message(phone: str, body: str):
-    """Simuleer een inkomend WhatsApp-bericht (gebruik alleen lokaal)."""
+    """Simuleer een inkomend WhatsApp-bericht (alleen met ENABLE_DEV_ROUTES=true)."""
+    if not settings.ENABLE_DEV_ROUTES:
+        raise HTTPException(status_code=404, detail="Not Found")
     db = next(get_db())
     from services.ai_service import process_message
     response = await process_message(
@@ -217,15 +223,20 @@ async def health():
 
 @app.get("/debug")
 async def debug_config():
-    """Controleer of alle environment-variabelen correct zijn ingeladen."""
-    api_key = settings.ANTHROPIC_API_KEY
+    """Controleer of de environment-variabelen zijn ingeladen (alleen met ENABLE_DEV_ROUTES=true).
+
+    Geen geheimen of delen daarvan in de respons.
+    """
+    if not settings.ENABLE_DEV_ROUTES:
+        raise HTTPException(status_code=404, detail="Not Found")
     return {
-        "anthropic_api_key": f"{api_key[:10]}...{api_key[-4:]}" if len(api_key) > 14 else ("NIET INGESTELD" if not api_key else "te kort"),
+        "anthropic_api_key": "ingesteld" if settings.ANTHROPIC_API_KEY else "NIET INGESTELD",
+        "anthropic_model": settings.ANTHROPIC_MODEL,
         "garage_naam": settings.GARAGE_NAAM,
-        "database_url": settings.DATABASE_URL.split("///")[0] + "///***",
+        "timezone": settings.TIMEZONE,
         "base_url": settings.BASE_URL,
-        "twilio_sid": settings.TWILIO_ACCOUNT_SID[:6] + "***" if settings.TWILIO_ACCOUNT_SID else "niet ingesteld",
-        "smtp_user": settings.SMTP_USER or "niet ingesteld",
+        "twilio": "ingesteld" if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN else "NIET INGESTELD",
+        "smtp_user": "ingesteld" if settings.SMTP_USER else "NIET INGESTELD",
     }
 
 
@@ -270,6 +281,11 @@ async def chat_api_message(
         if not content:
             continue
         media_type = (img_file.content_type or "image/jpeg").split(";")[0].strip()
+        if media_type not in SUPPORTED_IMAGE_TYPES:
+            return JSONResponse(
+                status_code=400,
+                content={"response": "Alleen JPG, PNG, GIF of WEBP-foto's kunnen worden verwerkt."},
+            )
         b64 = base64.standard_b64encode(content).decode()
         img_content.append({"data": b64, "media_type": media_type})
 
