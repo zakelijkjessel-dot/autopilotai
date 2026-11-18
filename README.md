@@ -21,6 +21,10 @@ Een AI-gestuurde WhatsApp chatbot voor autogarages, gebouwd met **FastAPI**, **C
 
 ---
 
+## n8n-versie
+
+Dezelfde bot is ook uitgewerkt als n8n-workflows, zie [`n8n/README.md`](n8n/README.md). Die gebruikt Google Sheets als administratie en werkt met importeerbare JSON-bestanden.
+
 ## Projectstructuur
 
 ```
